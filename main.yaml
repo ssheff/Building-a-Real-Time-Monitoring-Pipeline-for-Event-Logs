@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Enable AWS CloudTrail to capture all API events.
+Description: Enable AWS CloudTrail with alerting and a queue for log processing tasks.
 
 Parameters:
   TrailBucketName:
@@ -13,7 +13,6 @@ Parameters:
     Type: String
     AllowedPattern: "^[^@]+@[^@]+\.[^@]+$"
     ConstraintDescription: Must be a valid email address.
-
 
 Resources:
   CloudTrail:
@@ -31,6 +30,7 @@ Resources:
             - Type: "AWS::S3::Object"
               Values:
                 - "arn:aws:s3:::"
+
   TrailBucket:
     Type: "AWS::S3::Bucket"
     Properties:
@@ -41,9 +41,9 @@ Resources:
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
       NotificationConfiguration:
-        TopicConfigurations:
+        QueueConfigurations:
           - Event: "s3:ObjectCreated:*"
-            Topic: !Ref LogAlertTopic
+            Queue: !GetAtt LogProcessingQueue.Arn
 
   TrailBucketPolicy:
     Type: "AWS::S3::BucketPolicy"
@@ -61,12 +61,17 @@ Resources:
             Condition:
               StringEquals:
                 "s3:x-amz-acl": "bucket-owner-full-control"
-          - Sid: AllowSNSNotification
+          - Sid: AllowSQSAccess
             Effect: Allow
             Principal:
-              Service: "sns.amazonaws.com"
-            Action: "s3:GetBucketNotification"
-            Resource: !Ref TrailBucket
+              Service: "s3.amazonaws.com"
+            Action: "sqs:SendMessage"
+            Resource: !GetAtt LogProcessingQueue.Arn
+
+  LogProcessingQueue:
+    Type: "AWS::SQS::Queue"
+    Properties:
+      QueueName: "CloudTrailLogProcessingQueue"
 
   LogAlertTopic:
     Type: "AWS::SNS::Topic"
@@ -80,12 +85,33 @@ Resources:
       TopicArn: !Ref LogAlertTopic
       Endpoint: !Ref AlertEmail
 
+  LogProcessingQueuePolicy:
+    Type: "AWS::SQS::QueuePolicy"
+    Properties:
+      Queues:
+        - !Ref LogProcessingQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowS3SendMessage
+            Effect: Allow
+            Principal:
+              Service: "s3.amazonaws.com"
+            Action: "sqs:SendMessage"
+            Resource: !GetAtt LogProcessingQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt TrailBucket.Arn
+
 Outputs:
   CloudTrailBucketName:
     Description: Name of the S3 bucket where CloudTrail logs are stored.
     Value: !Ref TrailBucket
 
-  
   NotificationTopicARN:
     Description: ARN of the SNS topic for log alerts.
     Value: !Ref LogAlertTopic
+
+  LogProcessingQueueURL:
+    Description: URL of the SQS queue for log processing tasks.
+    Value: !Ref LogProcessingQueue
