@@ -15,7 +15,21 @@ Parameters:
     ConstraintDescription: Must be a valid email address.
 
 Resources:
-  # CloudTrail, S3 Bucket, and Policies (unchanged)
+
+  ConfigFile:
+    Type: "AWS::S3::BucketPolicy"
+    Properties:
+      Bucket: !Ref TrailBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowLambdaRead
+            Effect: Allow
+            Principal:
+              Service: "lambda.amazonaws.com"
+            Action: "s3:GetObject"
+            Resource: !Sub "${TrailBucket.Arn}/config/monitored_events.json"
+  
   CloudTrail:
     Type: "AWS::CloudTrail::Trail"
     Properties:
@@ -89,25 +103,40 @@ Resources:
 
           sns_client = boto3.client('sns')
           dynamodb = boto3.resource('dynamodb')
+          s3 = boto3.client('s3')
 
           TOPIC_ARN = '${LogAlertTopicArn}'
           TABLE_NAME = '${SecurityEventsTableName}'
+          CONFIG_FILE_KEY = 'config/monitored_events.json'
+          BUCKET_NAME = '${TrailBucketName}'
+
+          def fetch_event_list(bucket_name, config_key):
+              """Fetch the list of events to monitor from the S3 bucket."""
+              try:
+                  response = s3.get_object(Bucket=bucket_name, Key=config_key)
+                  config_data = response['Body'].read().decode('utf-8')
+                  return json.loads(config_data).get('events', [])
+              except Exception as e:
+                  print(f"Error fetching configuration file: {str(e)}")
+                  return []
 
           def handler(event, context):
               table = dynamodb.Table(TABLE_NAME)
+              events_to_monitor = fetch_event_list(BUCKET_NAME, CONFIG_FILE_KEY)
+              print(f"Monitoring Events: {events_to_monitor}")
+
               for record in event['Records']:
                   # Get S3 bucket and object details
                   bucket_name = record['s3']['bucket']['name']
                   object_key = record['s3']['object']['key']
                   
                   # Read log file
-                  s3 = boto3.client('s3')
                   log_file = s3.get_object(Bucket=bucket_name, Key=object_key)
                   log_data = json.loads(log_file['Body'].read().decode('utf-8'))
                   
                   # Process log entries
                   for log_entry in log_data.get('Records', []):
-                      if log_entry['eventName'] in ['ConsoleLogin', 'CreateUser']:
+                      if log_entry['eventName'] in events_to_monitor:
                           # Save to DynamoDB
                           table.put_item(
                               Item={

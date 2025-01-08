@@ -38,3 +38,5 @@ aws cloudformation create-stack \
   --parameters ParameterKey=TrailBucketName,ParameterValue=my-trail-bucket \
                  ParameterKey=AlertEmail,ParameterValue=myemail@email.com \
   --capabilities CAPABILITY_NAMED_IAM
+
+  aws s3 cp events.json s3://<Your-Bucket-Name>/config/monitored_events.json
