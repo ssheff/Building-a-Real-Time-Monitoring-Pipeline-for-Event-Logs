@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Enable AWS CloudTrail with alerting, queue, and Lambda processing for specific events.
+Description: Enable AWS CloudTrail with alerting, queue, and Lambda processing for specific events, storing data in DynamoDB.
 
 Parameters:
   TrailBucketName:
@@ -15,6 +15,7 @@ Parameters:
     ConstraintDescription: Must be a valid email address.
 
 Resources:
+  # CloudTrail, S3 Bucket, and Policies (unchanged)
   CloudTrail:
     Type: "AWS::CloudTrail::Trail"
     Properties:
@@ -37,6 +38,19 @@ Resources:
         LambdaConfigurations:
           - Event: "s3:ObjectCreated:*"
             Function: !GetAtt LogProcessorLambda.Arn
+
+  # DynamoDB Table
+  SecurityEventsTable:
+    Type: "AWS::DynamoDB::Table"
+    Properties:
+      TableName: "SecurityEvents"
+      AttributeDefinitions:
+        - AttributeName: EventId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: EventId
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
 
   TrailBucketPolicy:
     Type: "AWS::S3::BucketPolicy"
@@ -71,11 +85,16 @@ Resources:
         ZipFile: |
           import boto3
           import json
+          import uuid
 
           sns_client = boto3.client('sns')
+          dynamodb = boto3.resource('dynamodb')
+
           TOPIC_ARN = '${LogAlertTopicArn}'
+          TABLE_NAME = '${SecurityEventsTableName}'
 
           def handler(event, context):
+              table = dynamodb.Table(TABLE_NAME)
               for record in event['Records']:
                   # Get S3 bucket and object details
                   bucket_name = record['s3']['bucket']['name']
@@ -89,6 +108,17 @@ Resources:
                   # Process log entries
                   for log_entry in log_data.get('Records', []):
                       if log_entry['eventName'] in ['ConsoleLogin', 'CreateUser']:
+                          # Save to DynamoDB
+                          table.put_item(
+                              Item={
+                                  'EventId': str(uuid.uuid4()),
+                                  'EventName': log_entry['eventName'],
+                                  'EventTime': log_entry['eventTime'],
+                                  'Username': log_entry.get('userIdentity', {}).get('userName', 'Unknown'),
+                                  'SourceIP': log_entry.get('sourceIPAddress', 'Unknown')
+                              }
+                          )
+                          # Publish SNS Alert
                           sns_client.publish(
                               TopicArn=TOPIC_ARN,
                               Message=json.dumps(log_entry, indent=2),
@@ -115,7 +145,11 @@ Resources:
               - Effect: Allow
                 Action:
                   - "s3:GetObject"
-                Resource: !Sub "${TrailBucket.Arn}/*"
+                  - "dynamodb:PutItem"
+                  - "dynamodb:DescribeTable"
+                Resource:
+                  - !Sub "${TrailBucket.Arn}/*"
+                  - !GetAtt SecurityEventsTable.Arn
               - Effect: Allow
                 Action:
                   - "sns:Publish"
@@ -145,3 +179,7 @@ Outputs:
   NotificationTopicARN:
     Description: ARN of the SNS topic for security event alerts.
     Value: !Ref LogAlertTopic
+
+  SecurityEventsTableName:
+    Description: Name of the DynamoDB table storing security events.
+    Value: !Ref SecurityEventsTable
