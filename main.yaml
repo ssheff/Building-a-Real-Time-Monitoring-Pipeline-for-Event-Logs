@@ -8,6 +8,12 @@ Parameters:
     Default: cloudtrail-logs-bucket
     AllowedPattern: "[a-zA-Z0-9.\-_]{3,63}"
     ConstraintDescription: Must be a valid S3 bucket name (3-63 characters).
+  AlertEmail:
+    Description: Email address to receive notifications when new logs are added.
+    Type: String
+    AllowedPattern: "^[^@]+@[^@]+\.[^@]+$"
+    ConstraintDescription: Must be a valid email address.
+
 
 Resources:
   CloudTrail:
@@ -25,10 +31,6 @@ Resources:
             - Type: "AWS::S3::Object"
               Values:
                 - "arn:aws:s3:::"
-            - Type: "AWS::Lambda::Function"
-              Values:
-                - "arn:aws:lambda"
-
   TrailBucket:
     Type: "AWS::S3::Bucket"
     Properties:
@@ -38,6 +40,10 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+      NotificationConfiguration:
+        TopicConfigurations:
+          - Event: "s3:ObjectCreated:*"
+            Topic: !Ref LogAlertTopic
 
   TrailBucketPolicy:
     Type: "AWS::S3::BucketPolicy"
@@ -55,8 +61,31 @@ Resources:
             Condition:
               StringEquals:
                 "s3:x-amz-acl": "bucket-owner-full-control"
+          - Sid: AllowSNSNotification
+            Effect: Allow
+            Principal:
+              Service: "sns.amazonaws.com"
+            Action: "s3:GetBucketNotification"
+            Resource: !Ref TrailBucket
+
+  LogAlertTopic:
+    Type: "AWS::SNS::Topic"
+    Properties:
+      TopicName: "CloudTrailLogAlerts"
+
+  LogAlertSubscription:
+    Type: "AWS::SNS::Subscription"
+    Properties:
+      Protocol: "email"
+      TopicArn: !Ref LogAlertTopic
+      Endpoint: !Ref AlertEmail
 
 Outputs:
   CloudTrailBucketName:
     Description: Name of the S3 bucket where CloudTrail logs are stored.
     Value: !Ref TrailBucket
+
+  
+  NotificationTopicARN:
+    Description: ARN of the SNS topic for log alerts.
+    Value: !Ref LogAlertTopic

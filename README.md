@@ -36,4 +36,5 @@ aws cloudformation create-stack \
   --stack-name EnableCloudTrailStack \
   --template-body file://main.yaml \
   --parameters ParameterKey=TrailBucketName,ParameterValue=my-trail-bucket \
+                 ParameterKey=AlertEmail,ParameterValue=myemail@email.com \
   --capabilities CAPABILITY_NAMED_IAM
