@@ -30,3 +30,10 @@ NOTE!
 The solution should be deployed using IaC.
 
  
+Deployment steps:
+
+aws cloudformation create-stack \
+  --stack-name EnableCloudTrailStack \
+  --template-body file://main.yaml \
+  --parameters ParameterKey=TrailBucketName,ParameterValue=my-trail-bucket \
+  --capabilities CAPABILITY_NAMED_IAM

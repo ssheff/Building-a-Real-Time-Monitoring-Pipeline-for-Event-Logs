@@ -1,0 +1,62 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Enable AWS CloudTrail to capture all API events.
+
+Parameters:
+  TrailBucketName:
+    Description: Name of the S3 bucket to store CloudTrail logs.
+    Type: String
+    Default: cloudtrail-logs-bucket
+    AllowedPattern: "[a-zA-Z0-9.\-_]{3,63}"
+    ConstraintDescription: Must be a valid S3 bucket name (3-63 characters).
+
+Resources:
+  CloudTrail:
+    Type: "AWS::CloudTrail::Trail"
+    Properties:
+      IsLogging: true
+      S3BucketName: !Ref TrailBucket
+      IncludeGlobalServiceEvents: true
+      IsMultiRegionTrail: true
+      EnableLogFileValidation: true
+      EventSelectors:
+        - ReadWriteType: All
+          IncludeManagementEvents: true
+          DataResources:
+            - Type: "AWS::S3::Object"
+              Values:
+                - "arn:aws:s3:::"
+            - Type: "AWS::Lambda::Function"
+              Values:
+                - "arn:aws:lambda"
+
+  TrailBucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      BucketName: !Ref TrailBucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  TrailBucketPolicy:
+    Type: "AWS::S3::BucketPolicy"
+    Properties:
+      Bucket: !Ref TrailBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudTrail
+            Effect: Allow
+            Principal:
+              Service: "cloudtrail.amazonaws.com"
+            Action: "s3:PutObject"
+            Resource: !Sub "${TrailBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                "s3:x-amz-acl": "bucket-owner-full-control"
+
+Outputs:
+  CloudTrailBucketName:
+    Description: Name of the S3 bucket where CloudTrail logs are stored.
+    Value: !Ref TrailBucket
