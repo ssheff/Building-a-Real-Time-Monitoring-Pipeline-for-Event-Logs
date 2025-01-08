@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Enable AWS CloudTrail with alerting and a queue for log processing tasks.
+Description: Enable AWS CloudTrail with alerting, queue, and Lambda processing for specific events.
 
 Parameters:
   TrailBucketName:
@@ -9,7 +9,7 @@ Parameters:
     AllowedPattern: "[a-zA-Z0-9.\-_]{3,63}"
     ConstraintDescription: Must be a valid S3 bucket name (3-63 characters).
   AlertEmail:
-    Description: Email address to receive notifications when new logs are added.
+    Description: Email address to receive notifications when specific events are detected.
     Type: String
     AllowedPattern: "^[^@]+@[^@]+\.[^@]+$"
     ConstraintDescription: Must be a valid email address.
@@ -23,13 +23,6 @@ Resources:
       IncludeGlobalServiceEvents: true
       IsMultiRegionTrail: true
       EnableLogFileValidation: true
-      EventSelectors:
-        - ReadWriteType: All
-          IncludeManagementEvents: true
-          DataResources:
-            - Type: "AWS::S3::Object"
-              Values:
-                - "arn:aws:s3:::"
 
   TrailBucket:
     Type: "AWS::S3::Bucket"
@@ -41,9 +34,9 @@ Resources:
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
       NotificationConfiguration:
-        QueueConfigurations:
+        LambdaConfigurations:
           - Event: "s3:ObjectCreated:*"
-            Queue: !GetAtt LogProcessingQueue.Arn
+            Function: !GetAtt LogProcessorLambda.Arn
 
   TrailBucketPolicy:
     Type: "AWS::S3::BucketPolicy"
@@ -61,17 +54,72 @@ Resources:
             Condition:
               StringEquals:
                 "s3:x-amz-acl": "bucket-owner-full-control"
-          - Sid: AllowSQSAccess
+          - Sid: AllowLambdaInvoke
             Effect: Allow
             Principal:
-              Service: "s3.amazonaws.com"
-            Action: "sqs:SendMessage"
-            Resource: !GetAtt LogProcessingQueue.Arn
+              Service: "lambda.amazonaws.com"
+            Action: "s3:GetObject"
+            Resource: !Sub "${TrailBucket.Arn}/*"
 
-  LogProcessingQueue:
-    Type: "AWS::SQS::Queue"
+  LogProcessorLambda:
+    Type: "AWS::Lambda::Function"
     Properties:
-      QueueName: "CloudTrailLogProcessingQueue"
+      FunctionName: "LogProcessor"
+      Runtime: "python3.9"
+      Handler: "index.handler"
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+
+          sns_client = boto3.client('sns')
+          TOPIC_ARN = '${LogAlertTopicArn}'
+
+          def handler(event, context):
+              for record in event['Records']:
+                  # Get S3 bucket and object details
+                  bucket_name = record['s3']['bucket']['name']
+                  object_key = record['s3']['object']['key']
+                  
+                  # Read log file
+                  s3 = boto3.client('s3')
+                  log_file = s3.get_object(Bucket=bucket_name, Key=object_key)
+                  log_data = json.loads(log_file['Body'].read().decode('utf-8'))
+                  
+                  # Process log entries
+                  for log_entry in log_data.get('Records', []):
+                      if log_entry['eventName'] in ['ConsoleLogin', 'CreateUser']:
+                          sns_client.publish(
+                              TopicArn=TOPIC_ARN,
+                              Message=json.dumps(log_entry, indent=2),
+                              Subject=f"Security Event Detected: {log_entry['eventName']}"
+                          )
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 60
+
+  LambdaExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: "lambda.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: "LambdaAccessPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:GetObject"
+                Resource: !Sub "${TrailBucket.Arn}/*"
+              - Effect: Allow
+                Action:
+                  - "sns:Publish"
+                Resource: !Ref LogAlertTopic
 
   LogAlertTopic:
     Type: "AWS::SNS::Topic"
@@ -85,33 +133,15 @@ Resources:
       TopicArn: !Ref LogAlertTopic
       Endpoint: !Ref AlertEmail
 
-  LogProcessingQueuePolicy:
-    Type: "AWS::SQS::QueuePolicy"
-    Properties:
-      Queues:
-        - !Ref LogProcessingQueue
-      PolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Sid: AllowS3SendMessage
-            Effect: Allow
-            Principal:
-              Service: "s3.amazonaws.com"
-            Action: "sqs:SendMessage"
-            Resource: !GetAtt LogProcessingQueue.Arn
-            Condition:
-              ArnEquals:
-                aws:SourceArn: !GetAtt TrailBucket.Arn
-
 Outputs:
   CloudTrailBucketName:
     Description: Name of the S3 bucket where CloudTrail logs are stored.
     Value: !Ref TrailBucket
 
-  NotificationTopicARN:
-    Description: ARN of the SNS topic for log alerts.
-    Value: !Ref LogAlertTopic
+  LogProcessorLambdaName:
+    Description: Name of the Lambda function processing log files.
+    Value: !Ref LogProcessorLambda
 
-  LogProcessingQueueURL:
-    Description: URL of the SQS queue for log processing tasks.
-    Value: !Ref LogProcessingQueue
+  NotificationTopicARN:
+    Description: ARN of the SNS topic for security event alerts.
+    Value: !Ref LogAlertTopic
