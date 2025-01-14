@@ -5,40 +5,18 @@ Parameters:
   TrailBucketName:
     Description: Name of the S3 bucket to store CloudTrail logs.
     Type: String
-    Default: cloudtrail-logs-bucket
-    AllowedPattern: "[a-zA-Z0-9.\-_]{3,63}"
+    Default: cloudtrail-logs-bucket-demo-12345
+    # AllowedPattern: "[a-zA-Z0-9.\-_]{3,63}"
     ConstraintDescription: Must be a valid S3 bucket name (3-63 characters).
+
   AlertEmail:
     Description: Email address to receive notifications when specific events are detected.
     Type: String
-    AllowedPattern: "^[^@]+@[^@]+\.[^@]+$"
+    # AllowedPattern: "^[^@]+@[^@]+\.[^@]+$"
     ConstraintDescription: Must be a valid email address.
 
 Resources:
-
-  ConfigFile:
-    Type: "AWS::S3::BucketPolicy"
-    Properties:
-      Bucket: !Ref TrailBucket
-      PolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Sid: AllowLambdaRead
-            Effect: Allow
-            Principal:
-              Service: "lambda.amazonaws.com"
-            Action: "s3:GetObject"
-            Resource: !Sub "${TrailBucket.Arn}/config/monitored_events.json"
   
-  CloudTrail:
-    Type: "AWS::CloudTrail::Trail"
-    Properties:
-      IsLogging: true
-      S3BucketName: !Ref TrailBucket
-      IncludeGlobalServiceEvents: true
-      IsMultiRegionTrail: true
-      EnableLogFileValidation: true
-
   TrailBucket:
     Type: "AWS::S3::Bucket"
     Properties:
@@ -52,19 +30,6 @@ Resources:
         LambdaConfigurations:
           - Event: "s3:ObjectCreated:*"
             Function: !GetAtt LogProcessorLambda.Arn
-
-  # DynamoDB Table
-  SecurityEventsTable:
-    Type: "AWS::DynamoDB::Table"
-    Properties:
-      TableName: "SecurityEvents"
-      AttributeDefinitions:
-        - AttributeName: EventId
-          AttributeType: S
-      KeySchema:
-        - AttributeName: EventId
-          KeyType: HASH
-      BillingMode: PAY_PER_REQUEST
 
   TrailBucketPolicy:
     Type: "AWS::S3::BucketPolicy"
@@ -88,6 +53,44 @@ Resources:
               Service: "lambda.amazonaws.com"
             Action: "s3:GetObject"
             Resource: !Sub "${TrailBucket.Arn}/*"
+
+  CloudTrail:
+    Type: "AWS::CloudTrail::Trail"
+    DependsOn: TrailBucket
+    Properties:
+      IsLogging: true
+      S3BucketName: !Ref TrailBucketName
+      IncludeGlobalServiceEvents: true
+      IsMultiRegionTrail: true
+      EnableLogFileValidation: true
+
+
+  ConfigFile:
+    Type: "AWS::S3::BucketPolicy"
+    Properties:
+      Bucket: !Ref TrailBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowLambdaRead
+            Effect: Allow
+            Principal:
+              Service: "lambda.amazonaws.com"
+            Action: "s3:GetObject"
+            Resource: !Sub "${TrailBucket.Arn}/config/monitored_events.json"
+
+  # DynamoDB Table
+  SecurityEventsTable:
+    Type: "AWS::DynamoDB::Table"
+    Properties:
+      TableName: "SecurityEvents"
+      AttributeDefinitions:
+        - AttributeName: EventId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: EventId
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
 
   LogProcessorLambda:
     Type: "AWS::Lambda::Function"
@@ -177,8 +180,9 @@ Resources:
                   - "dynamodb:PutItem"
                   - "dynamodb:DescribeTable"
                 Resource:
-                  - !Sub "${TrailBucket.Arn}/*"
-                  - !GetAtt SecurityEventsTable.Arn
+                  # - !Sub "${TrailBucket.Arn}/*"
+                  # - !GetAtt SecurityEventsTable.Arn
+                  - "*"
               - Effect: Allow
                 Action:
                   - "sns:Publish"
@@ -201,9 +205,9 @@ Outputs:
     Description: Name of the S3 bucket where CloudTrail logs are stored.
     Value: !Ref TrailBucket
 
-  LogProcessorLambdaName:
-    Description: Name of the Lambda function processing log files.
-    Value: !Ref LogProcessorLambda
+  # LogProcessorLambdaName:
+  #   Description: Name of the Lambda function processing log files.
+  #   Value: !Ref LogProcessorLambda
 
   NotificationTopicARN:
     Description: ARN of the SNS topic for security event alerts.
