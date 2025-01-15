@@ -193,6 +193,12 @@ Resources:
       Properties:
         LogGroupName: "/aws/lambda/log-processor"
         RetentionInDays: 7
+    
+    # SNS Topic
+    LogAlertTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: CloudTrailLogAlerts
 
     # lambda function
     LogProcessorLambda:
@@ -200,41 +206,50 @@ Resources:
       Properties:
         FunctionName: LogProcessor
         Runtime: python3.11
+        Description: Processes S3 Log Files
         Handler: index.handler
         Environment:
           Variables:
             LOG_GROUP: "/aws/lambda/log-processor"
+            BUCKET_NAME: 
+              Ref: CloudTrailS3Bucket
+            TABLE_NAME:
+              Ref: SecurityEventsTable
+            TOPIC_ARN:
+              Ref: LogAlertTopic
+
         Code:
           ZipFile: |
             import boto3
             import json
             import uuid
+            import os
             sns_client = boto3.client('sns')
             dynamodb = boto3.resource('dynamodb')
             s3 = boto3.client('s3')
-            TOPIC_ARN = '${LogAlertTopicArn}'
-            TABLE_NAME = '${SecurityEventsTableName}'
             CONFIG_FILE_KEY = 'config/monitored_events.json'
-            BUCKET_NAME = '${TrailBucketName}'
-            def fetch_event_list(bucket_name, config_key):
+            c_topic_arn = os.environ["TOPIC_ARN"]
+            c_bucket_name = os.environ["BUCKET_NAME"]
+            c_table_name = os.environ["TABLE_NAME"]
+            def fetch_event_list(c_bucket_name, config_key):
                 """Fetch the list of events to monitor from the S3 bucket."""
                 try:
-                    response = s3.get_object(Bucket=bucket_name, Key=config_key)
+                    response = s3.get_object(Bucket=c_bucket_name, Key=config_key)
                     config_data = response['Body'].read().decode('utf-8')
                     return json.loads(config_data).get('events', [])
                 except Exception as e:
                     print(f"Error fetching configuration file: {str(e)}")
                     return []
             def handler(event, context):
-                table = dynamodb.Table(TABLE_NAME)
-                events_to_monitor = fetch_event_list(BUCKET_NAME, CONFIG_FILE_KEY)
+                table = dynamodb.Table(c_table_name)
+                events_to_monitor = fetch_event_list(c_bucket_name, CONFIG_FILE_KEY)
                 print(f"Monitoring Events: {events_to_monitor}")
                 for record in event['Records']:
                     # Get S3 bucket and object details
-                    bucket_name = record['s3']['bucket']['name']
+                    s_bucket_name = record['s3']['bucket']['name']
                     object_key = record['s3']['object']['key']
                     # Read log file
-                    log_file = s3.get_object(Bucket=bucket_name, Key=object_key)
+                    log_file = s3.get_object(Bucket=s_bucket_name, Key=object_key)
                     log_data = json.loads(log_file['Body'].read().decode('utf-8'))
                     # Process log entries
                     for log_entry in log_data.get('Records', []):
@@ -251,7 +266,7 @@ Resources:
                             )
                             # Publish SNS Alert
                             sns_client.publish(
-                                TopicArn=TOPIC_ARN,
+                                TopicArn=c_topic_arn,
                                 Message=json.dumps(log_entry, indent=2),
                                 Subject=f"Security Event Detected: {log_entry['eventName']}"
                             )
@@ -290,6 +305,7 @@ Resources:
                 - Effect: Allow
                   Action:
                     - s3:GetObject
+                    - s3:ListBucket
                     - dynamodb:PutItem
                     - dynamodb:DescribeTable
                   Resource:
@@ -310,6 +326,7 @@ Resources:
                     - "logs:CreateLogStream"
                     - "logs:PutLogEvents"
                     - "s3:GetObject"
+                    - "s3:ListBucket"
                   Resource: "*"
 
     LambdaInvokePermission:
