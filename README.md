@@ -163,3 +163,8 @@ Testing the Setup
 	•	Monitored events are correctly processed and stored in DynamoDB.
 
 	•	Alerts are sent via SNS for detected events.
+
+   4. Query DynamoDB for captured events
+
+   aws dynamodb scan --table-name SecurityEvents
+   
