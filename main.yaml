@@ -186,14 +186,24 @@ Resources:
         S3BucketName: !Ref TrailBucketName
         IsLogging: true
         KMSKeyId: !GetAtt cloudtrailKey.Arn
+        
+    # CloudWatch Log Group
+    CloudWatchLogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        LogGroupName: "/aws/lambda/log-processor"
+        RetentionInDays: 7
 
     # lambda function
     LogProcessorLambda:
       Type: AWS::Lambda::Function
       Properties:
         FunctionName: LogProcessor
-        Runtime: python3.9
+        Runtime: python3.11
         Handler: index.handler
+        Environment:
+        Variables:
+          LOG_GROUP: "/aws/lambda/log-processor"
         Code:
           ZipFile: |
             import boto3
@@ -247,6 +257,7 @@ Resources:
                             )
         Role: !GetAtt LambdaExecutionRole.Arn
         Timeout: 60    
+
   # DynamoDB Table
     SecurityEventsTable:
       Type: AWS::DynamoDB::Table
@@ -289,7 +300,29 @@ Resources:
                   Action:
                     - sns:Publish
                   Resource: !Ref LogAlertTopic
+          - PolicyName: "LambdaExecutionPolicy"
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - "logs:CreateLogGroup"
+                    - "logs:CreateLogStream"
+                    - "logs:PutLogEvents"
+                    - "s3:GetObject"
+                  Resource: "*"
 
+    LambdaInvokePermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        FunctionName: 
+          Ref: LogProcessorLambda
+        Action: "lambda:InvokeFunction"
+        Principal: "s3.amazonaws.com"
+        SourceArn: 
+          Fn::Sub: "arn:aws:s3:::${TrailBucketName}"
+          # Resource: !Sub arn:aws:s3:::${TrailBucketName}
+          
     LogAlertTopic:
       Type: AWS::SNS::Topic
       Properties:

@@ -107,6 +107,17 @@ Methodology:
 	    •	Added an events.json file to define the list of monitored events.
 	
  
+    14. Added CloudWatch Log Group
+        
+        • The CloudWatchLogGroup resource is added to define the Log Group for the Lambda function logs.
+
+	15.	IAM Role Update
+
+	    •	LambdaExecutionRole now includes permissions for logs:CreateLogGroup, logs:CreateLogStream, and logs:PutLogEvents.
+
+	16. Lambda Function Logging:
+
+	    •	The Lambda function logs its events using console.log. These logs are automatically sent to CloudWatch due to the role permissions.
 
 WORKFLOW:
 
@@ -167,4 +178,3 @@ Testing the Setup
    4. Query DynamoDB for captured events
 
    aws dynamodb scan --table-name SecurityEvents
-   
