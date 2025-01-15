@@ -275,14 +275,17 @@ Resources:
 
                     # Check if 'Records' exists and is a list
                     if isinstance(log_data_json, dict) and 'Records' in log_data_json:
+                        print("Records exist and it is a list, getting into the loop")
                         records = log_data_json['Records']
                         if isinstance(records, list):
+                            print("getting into the loop since records are list")
                             # Process log entries
                             for log_entry in records:
                                 # Ensure log_entry is a dictionary
                                 if isinstance(log_entry, dict):
                                     if log_entry['eventName'] in events_to_monitor:
                                         # Save to DynamoDB
+                                        print("SUCCESS. Event: ", log_entry['eventName'], " recorded")
                                         table.put_item(
                                             Item={
                                                 'EventId': str(uuid.uuid4()),
@@ -299,6 +302,8 @@ Resources:
                                             Message=json.dumps(log_entry, indent=2),
                                             Subject=f"Security Event Detected: {log_entry['eventName']}"
                                         )
+                                    else:
+                                      print("NO MATCH. Event: ", log_entry['eventName'], " ignored")
                         else:
                             print("Error: 'Records' key is not a list")
                     else:
