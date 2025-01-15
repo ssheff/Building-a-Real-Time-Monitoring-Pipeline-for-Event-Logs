@@ -224,6 +224,8 @@ Resources:
             import json
             import uuid
             import os
+            import gzip
+            import io
             sns_client = boto3.client('sns')
             dynamodb = boto3.resource('dynamodb')
             s3 = boto3.client('s3')
@@ -231,45 +233,76 @@ Resources:
             c_topic_arn = os.environ["TOPIC_ARN"]
             c_bucket_name = os.environ["BUCKET_NAME"]
             c_table_name = os.environ["TABLE_NAME"]
+            
             def fetch_event_list(c_bucket_name, config_key):
                 """Fetch the list of events to monitor from the S3 bucket."""
                 try:
                     response = s3.get_object(Bucket=c_bucket_name, Key=config_key)
                     config_data = response['Body'].read().decode('utf-8')
-                    return json.loads(config_data).get('events', [])
+                    # return json.loads(config_data).get('events', [])
+                    return json.loads(config_data).get('monitoredEvents', [])
+                    # monitoredEvents
                 except Exception as e:
                     print(f"Error fetching configuration file: {str(e)}")
                     return []
+
             def handler(event, context):
                 table = dynamodb.Table(c_table_name)
                 events_to_monitor = fetch_event_list(c_bucket_name, CONFIG_FILE_KEY)
                 print(f"Monitoring Events: {events_to_monitor}")
+                
                 for record in event['Records']:
                     # Get S3 bucket and object details
                     s_bucket_name = record['s3']['bucket']['name']
                     object_key = record['s3']['object']['key']
-                    # Read log file
-                    log_file = s3.get_object(Bucket=s_bucket_name, Key=object_key)
-                    log_data = json.loads(log_file['Body'].read().decode('utf-8'))
-                    # Process log entries
-                    for log_entry in log_data.get('Records', []):
-                        if log_entry['eventName'] in events_to_monitor:
-                            # Save to DynamoDB
-                            table.put_item(
-                                Item={
-                                    'EventId': str(uuid.uuid4()),
-                                    'EventName': log_entry['eventName'],
-                                    'EventTime': log_entry['eventTime'],
-                                    'Username': log_entry.get('userIdentity', {}).get('userName', 'Unknown'),
-                                    'SourceIP': log_entry.get('sourceIPAddress', 'Unknown')
-                                }
-                            )
-                            # Publish SNS Alert
-                            sns_client.publish(
-                                TopicArn=c_topic_arn,
-                                Message=json.dumps(log_entry, indent=2),
-                                Subject=f"Security Event Detected: {log_entry['eventName']}"
-                            )
+                    
+                    # Read log file from S3
+                    log_file_compressed = s3.get_object(Bucket=s_bucket_name, Key=object_key)
+                    
+                    # Decompress the gzipped content
+                    with gzip.GzipFile(fileobj=io.BytesIO(log_file_compressed['Body'].read()), mode='rb') as gz_file:
+                        log_data = gz_file.read().decode('utf-8')
+                    
+                    # Parse the log data (assuming it is JSON)
+                    try:
+                        log_data_json = json.loads(log_data)  # Now log_data_json will be a Python dictionary
+                    except json.JSONDecodeError:
+                        print(f"Error decoding log data: {log_data}")
+                        continue
+
+                    # DEBUGGING: Print the structure of the log_data_json to understand it
+                    print("Decoded log data:", log_data_json)
+
+                    # Check if 'Records' exists and is a list
+                    if isinstance(log_data_json, dict) and 'Records' in log_data_json:
+                        records = log_data_json['Records']
+                        if isinstance(records, list):
+                            # Process log entries
+                            for log_entry in records:
+                                # Ensure log_entry is a dictionary
+                                if isinstance(log_entry, dict):
+                                    if log_entry['eventName'] in events_to_monitor:
+                                        # Save to DynamoDB
+                                        table.put_item(
+                                            Item={
+                                                'EventId': str(uuid.uuid4()),
+                                                'EventName': log_entry['eventName'],
+                                                'EventTime': log_entry['eventTime'],
+                                                'Username': log_entry.get('userIdentity', {}).get('userName', 'Unknown'),
+                                                'SourceIP': log_entry.get('sourceIPAddress', 'Unknown')
+                                            }
+                                        )
+                                        
+                                        # Publish SNS Alert
+                                        sns_client.publish(
+                                            TopicArn=c_topic_arn,
+                                            Message=json.dumps(log_entry, indent=2),
+                                            Subject=f"Security Event Detected: {log_entry['eventName']}"
+                                        )
+                        else:
+                            print("Error: 'Records' key is not a list")
+                    else:
+                        print("Error: log_data_json is not a dictionary or 'Records' key is missing")
         Role: !GetAtt LambdaExecutionRole.Arn
         Timeout: 60    
 
@@ -322,11 +355,12 @@ Resources:
               Statement:
                 - Effect: Allow
                   Action:
-                    - "logs:CreateLogGroup"
-                    - "logs:CreateLogStream"
-                    - "logs:PutLogEvents"
-                    - "s3:GetObject"
-                    - "s3:ListBucket"
+                    - logs:CreateLogGroup
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                    - s3:GetObject
+                    - s3:ListBucket
+                    - kms:Decrypt
                   Resource: "*"
 
     LambdaInvokePermission:

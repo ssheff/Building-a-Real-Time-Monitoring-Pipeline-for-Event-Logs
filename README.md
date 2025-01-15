@@ -156,7 +156,7 @@ aws cloudformation create-stack \
                  ParameterKey=AlertEmail,ParameterValue=myemail@email.com \
   --capabilities CAPABILITY_NAMED_IAM
 
-  aws s3 cp events.json s3://<Your-Bucket-Name>/config/monitored_events.json
+  aws s3 cp monitored_events.json s3://<bucket name>>/config/monitored_events.json
 
 
 Testing the Setup
