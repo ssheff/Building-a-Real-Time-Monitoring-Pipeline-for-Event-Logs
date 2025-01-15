@@ -1,0 +1,238 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Enable AWS CloudTrail with alerting, queue, and Lambda processing
+  for specific events, storing data in DynamoDB.
+
+Parameters:
+  TrailBucketName:
+    Description: Name of the S3 bucket to store CloudTrail logs.
+    Type: String
+    Default: cloudtrail-logs-bucket
+    ConstraintDescription: Must be a valid S3 bucket name (3-63 characters).
+  AlertEmail:
+    Description: Email address to receive notifications when specific events are detected.
+    Type: String
+    ConstraintDescription: Must be a valid email address.
+
+Resources:
+
+  TrailBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Ref TrailBucketName
+
+    # Type: AWS::S3::Bucket
+    # Properties:
+    #   BucketName: !Ref TrailBucketName
+    #   PublicAccessBlockConfiguration:
+    #     BlockPublicAcls: true
+    #     BlockPublicPolicy: true
+    #     IgnorePublicAcls: true
+    #     RestrictPublicBuckets: true
+    #   # VersioningConfiguration:
+    #   #   Status: Enabled
+    #   NotificationConfiguration:
+    #     LambdaConfigurations:
+    #       - Event: s3:ObjectCreated:*
+    #         Function: !GetAtt LogProcessorLambda.Arn
+
+  TrailBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref TrailBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: "AWSCloudTrailAclCheck"
+            Effect: Allow
+            Principal:
+              Service: 'cloudtrail.amazonaws.com'
+            Action: "s3:GetBucketAcl"
+            Resource: !Sub arn:aws:s3:::${TrailBucket}
+          - Sid: "AWSCloudTrailWrite"
+            Effect: Allow
+            Principal:
+              Service: 'cloudtrail.amazonaws.com'
+            Action: "s3:PutObject"
+            Resource: !Sub arn:aws:s3:::${TrailBucket}/AWSLogs/${AWS::AccountId}/*
+            Condition:
+              StringEquals:
+                's3:x-amz-acl': 'bucket-owner-full-control'
+      #  Type: AWS::S3::BucketPolicy
+      #  Properties:
+      #    Bucket: !Ref TrailBucket
+      #    PolicyDocument:
+      #      Version: "2012-10-17"
+      #      Statement:
+      #        - Sid: "AWSCloudTrailAclCheck"
+      #          Effect: Allow
+      #          Principal:
+      #            Service: 'cloudtrail.amazonaws.com'
+      #          Action: "s3:GetBucketAcl"
+      #          Resource: !Sub arn:aws:s3:::${TrailBucket}
+      #        - Sid: "AWSCloudTrailWrite"
+      #          Effect: Allow
+      #          Principal:
+      #            Service: 'cloudtrail.amazonaws.com'
+      #          Action: "s3:PutObject"
+      #          Resource: !Sub arn:aws:s3:::${TrailBucket}/AWSLogs/${AWS::AccountId}/*
+      #          Condition:
+      #            StringEquals:
+      #              's3:x-amz-acl': 'bucket-owner-full-control'
+      #        - Sid: AllowLambdaInvoke
+      #          Effect: Allow
+      #          Principal:
+      #            Service: lambda.amazonaws.com
+      #          Action: s3:GetObject
+      #          Resource: !Sub ${TrailBucket.Arn}/*
+
+  CloudTrail:
+    Type: AWS::CloudTrail::Trail
+    DependsOn: TrailBucket
+    Properties:
+      IsLogging: true
+      S3BucketName: !Ref TrailBucket
+      IncludeGlobalServiceEvents: true
+      IsMultiRegionTrail: true
+      EnableLogFileValidation: true
+
+  # DynamoDB Table
+  SecurityEventsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: SecurityEvents
+      AttributeDefinitions:
+        - AttributeName: EventId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: EventId
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  LogProcessorLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: LogProcessor
+      Runtime: python3.9
+      Handler: index.handler
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import uuid
+          sns_client = boto3.client('sns')
+          dynamodb = boto3.resource('dynamodb')
+          s3 = boto3.client('s3')
+          TOPIC_ARN = '${LogAlertTopicArn}'
+          TABLE_NAME = '${SecurityEventsTableName}'
+          CONFIG_FILE_KEY = 'config/monitored_events.json'
+          BUCKET_NAME = '${TrailBucketName}'
+          def fetch_event_list(bucket_name, config_key):
+              """Fetch the list of events to monitor from the S3 bucket."""
+              try:
+                  response = s3.get_object(Bucket=bucket_name, Key=config_key)
+                  config_data = response['Body'].read().decode('utf-8')
+                  return json.loads(config_data).get('events', [])
+              except Exception as e:
+                  print(f"Error fetching configuration file: {str(e)}")
+                  return []
+          def handler(event, context):
+              table = dynamodb.Table(TABLE_NAME)
+              events_to_monitor = fetch_event_list(BUCKET_NAME, CONFIG_FILE_KEY)
+              print(f"Monitoring Events: {events_to_monitor}")
+              for record in event['Records']:
+                  # Get S3 bucket and object details
+                  bucket_name = record['s3']['bucket']['name']
+                  object_key = record['s3']['object']['key']
+                  # Read log file
+                  log_file = s3.get_object(Bucket=bucket_name, Key=object_key)
+                  log_data = json.loads(log_file['Body'].read().decode('utf-8'))
+                  # Process log entries
+                  for log_entry in log_data.get('Records', []):
+                      if log_entry['eventName'] in events_to_monitor:
+                          # Save to DynamoDB
+                          table.put_item(
+                              Item={
+                                  'EventId': str(uuid.uuid4()),
+                                  'EventName': log_entry['eventName'],
+                                  'EventTime': log_entry['eventTime'],
+                                  'Username': log_entry.get('userIdentity', {}).get('userName', 'Unknown'),
+                                  'SourceIP': log_entry.get('sourceIPAddress', 'Unknown')
+                              }
+                          )
+                          # Publish SNS Alert
+                          sns_client.publish(
+                              TopicArn=TOPIC_ARN,
+                              Message=json.dumps(log_entry, indent=2),
+                              Subject=f"Security Event Detected: {log_entry['eventName']}"
+                          )
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 60
+
+  S3InvokeLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref LogProcessorLambda
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub arn:aws:s3:::${TrailBucketName}
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: LambdaAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - dynamodb:PutItem
+                  - dynamodb:DescribeTable
+                Resource:
+                  - !Sub arn:aws:s3:::${TrailBucketName}
+                  - !Sub arn:aws:s3:::${TrailBucketName}/*
+                  - !GetAtt SecurityEventsTable.Arn
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref LogAlertTopic
+
+  LogAlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: CloudTrailLogAlerts
+
+  LogAlertSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: email
+      TopicArn: !Ref LogAlertTopic
+      Endpoint: !Ref AlertEmail
+
+Outputs:
+  CloudTrailBucketName:
+    Description: Name of the S3 bucket where CloudTrail logs are stored.
+    Value: !Ref TrailBucket
+
+  LogProcessorLambdaName:
+    Description: Name of the Lambda function processing log files.
+    Value: !Ref LogProcessorLambda
+
+  NotificationTopicARN:
+    Description: ARN of the SNS topic for security event alerts.
+    Value: !Ref LogAlertTopic
+
+  SecurityEventsTableName:
+    Description: Name of the DynamoDB table storing security events.
+    Value: !Ref SecurityEventsTable
