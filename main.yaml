@@ -202,8 +202,8 @@ Resources:
         Runtime: python3.11
         Handler: index.handler
         Environment:
-        Variables:
-          LOG_GROUP: "/aws/lambda/log-processor"
+          Variables:
+            LOG_GROUP: "/aws/lambda/log-processor"
         Code:
           ZipFile: |
             import boto3
